@@ -54,7 +54,7 @@ static void pulseOneFrame(uint8_t pin, uint16_t pulse_us)
 //
 // (A) STOP TRIMS  -------------------------------------------------
 static int16_t STOP_Z_L  = 1450;  // tune creep
-static int16_t STOP_Z_R  = 1430;  // tune creep
+static int16_t STOP_Z_R  = 1470;  // tune creep
 static int16_t STOP_X    = 1500;  // tune creep
 static int16_t STOP_CLAW = 1500;  // tune creep
 //
@@ -164,35 +164,24 @@ struct Step { int8_t z, x, claw; uint16_t ms; };
 // >>> TUNE HERE <<< Task 1 step times
 static Step task1[] =
 {
-    {  0, -1,  0, 1500 },
-    {  0,  0,  0, 120 },
-    {  0,  0, -1, 200 },
-    {  0,  0,  0, 120 },
-    { +1,  0,  0, 220 },
-    {  0,  0,  0, 120 },
-    {  0, +1,  0, 220 },
-    {  0,  0,  0, 120 },
-    {  0,  0, +1, 180 },
-    {  0,  0,  0, 120 },
-    { -1,  0,  0, 360 },
+    {0, +1, 0, 800 },
+    {0, -1, 0, 1200 },
+    {  +1, 0,  0, 4150 },
+    {0, +1, 0, 800 },
+    {0, -1, 0, 1200 },
+    {  +1,  0,  0, 850 },
+    {0, +1, 0, 800 },
+    {0, -1, 0, 1350 },
+    {  +1,  0, 0, 850 },
+    {0, +1, 0, 800 },
+    {0, -1, 0, 2000 },
+    {  -1,  0,  0, 5000 },
 };
 
 // >>> TUNE HERE <<< Task 2 step times
 static Step task2[] =
 {
-    { +1,  0,  0, 320 },
-    {  0,  0,  0, 120 },
-    {  0, -1,  0, 200 },
-    {  0,  0,  0, 120 },
-    {  0,  0, -1, 180 },
-    {  0,  0,  0, 120 },
-    { +1,  0,  0, 220 },
-    {  0,  0,  0, 120 },
-    {  0, +1,  0, 200 },
-    {  0,  0,  0, 120 },
-    {  0,  0, +1, 150 },
-    {  0,  0,  0, 120 },
-    { -1,  0,  0, 420 },
+    
 };
 
 static uint8_t  step_i  = 0;
@@ -256,8 +245,8 @@ static const Pose k_destinations[] =
 {
     // Up and left (curve outward)
     {   0.0f,  0.0f, 0.0f },
-    {  10.0f,  5.0f, 0.0f },
-    {10.0f, 10.0f, 0.0f },
+    {  -20.0f,  -20.0f, 0.0f },
+    {-40.0f, 10.0f, 0.0f },
 
 };
 
