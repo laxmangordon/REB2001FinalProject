@@ -1,14 +1,14 @@
-// robot.cpp — FULL FIX (NO DONUTS) + Task 1/2 actuator scripts + Task 3 original drive array
+// robot.cpp — MERGED: working Z/X (FS90R continuous) + working CLAW (positional)
 //
-// Key fix:
-//   - Servo pulses are BLOCKING (delayMicroseconds). If you run them during navigation,
-//     your chassis loop gets starved and the robot "donuts".
-//   - So: while robotState == ROBOT_DRIVE_TO_POINT, we run ZERO servo pulses. Period.
+//
+// Key fix kept:
+//   - Servo pulses are BLOCKING. While robotState == ROBOT_DRIVE_TO_POINT,
+//     we run ZERO servo pulses to prevent “donuts”.
 //
 // Buttons:
-//   A -> Task 1 actuator script (timed Z/X/Claw)
-//   B -> Task 2 actuator script (timed Z/X/Claw)
-//   C -> Task 3 drive destination array (your original curved array)
+//   A -> Task 1 actuator script (timed Z/X + positional Claw)
+//   B -> Task 2 actuator script (timed Z/X + positional Claw)
+//   C -> Task 3 drive destination array
 //
 // Manual mode:
 //   Hold B + C to toggle manual mode. Motors OFF, prints pose, ignores scripts/driving.
@@ -21,13 +21,17 @@
 // ============================================================
 // 1) PINS (edit ONLY if rewired)
 // ============================================================
-static const uint8_t PIN_Z_L  = 5;   // elevator left
-static const uint8_t PIN_Z_R  = 12;  // elevator right
-static const uint8_t PIN_X    = 11;  // x axis
-static const uint8_t PIN_CLAW = 13;   // claw
+// Z and X are FS90R continuous rotation
+static const uint8_t PIN_Z_L  = 5;    // elevator left (FS90R)
+static const uint8_t PIN_Z_R  = 12;   // elevator right (FS90R)
+static const uint8_t PIN_X    = 11;   // x axis (FS90R)
+
+// CLAW is positional (180° style servo)
+// Keep on 13 if that’s how it’s wired.
+static const uint8_t PIN_CLAW = 13;
 
 // ============================================================
-// 2) SERVO PULSE BASICS (FS90R continuous)
+// 2) SERVO PULSE BASICS
 // ============================================================
 static const uint16_t FRAME_US = 20000; // 50 Hz
 
@@ -52,16 +56,18 @@ static void pulseOneFrame(uint8_t pin, uint16_t pulse_us)
 // 3) TUNING (ONLY TOUCH THIS SECTION)
 // ============================================================
 //
-// (A) STOP TRIMS  -------------------------------------------------
+// (A) STOP TRIMS (FS90R) ---------------------------------------
+// Keep your known-good Z/X trims from the working Z/X code.
 static int16_t STOP_Z_L  = 1450;  // tune creep
 static int16_t STOP_Z_R  = 1470;  // tune creep
 static int16_t STOP_X    = 1500;  // tune creep
-static int16_t STOP_CLAW = 1500;  // tune creep
+
 //
-// (B) MIRROR SIGN -------------------------------------------------
+// (B) MIRROR SIGN (Z pair) -------------------------------------
 static const int8_t Z_R_INV = -1;
+
 //
-// (C) SPEED DELTAS ------------------------------------------------
+// (C) SPEED DELTAS (FS90R) -------------------------------------
 static int16_t Z_L_UP   = 170;
 static int16_t Z_R_UP   = 195;
 static int16_t Z_L_DOWN = 195;
@@ -70,8 +76,13 @@ static int16_t Z_R_DOWN = 170;
 static int16_t X_IN  = 120;
 static int16_t X_OUT = 120;
 
-static int16_t CLAW_OPEN  = 120;
-static int16_t CLAW_CLOSE = 120;
+//
+// (D) CLAW POSITIONS (positional servo) -------------------------
+// IMPORTANT: positional claw should be in normal servo range.
+// Your “9800” was way outside normal servo pulses and will be clamped.
+// Start with these and tune.
+static uint16_t CLAW_OPEN_US  = 1100;
+static uint16_t CLAW_CLOSE_US = 1800;
 
 // ============================================================
 // 4) BUTTONS
@@ -81,14 +92,21 @@ static Romi32U4ButtonB button_b;
 static Romi32U4ButtonC button_c;
 
 // ============================================================
-// 5) ACTUATOR COMMANDS (-1/0/+1)
+// 5) ACTUATOR COMMANDS
 // ============================================================
+// Z and X are continuous rotation: -1/0/+1
 static int8_t z_cmd = 0;     // +1 up, -1 down, 0 stop
 static int8_t x_cmd = 0;     // +1 in, -1 out,  0 stop
-static int8_t claw_cmd = 0;  // +1 open, -1 close, 0 stop
+
+// CLAW is positional: keep a target pulse width.
+// claw_cmd in steps means:
+//   +1 => set OPEN target
+//   -1 => set CLOSE target
+//    0 => hold last target
+static int8_t   claw_cmd = 0;
+static uint16_t claw_target_us = 1500;
 
 static uint32_t x_brake_until_ms = 0;
-static uint32_t claw_brake_until_ms = 0;
 
 static inline uint16_t pulseX()
 {
@@ -98,27 +116,19 @@ static inline uint16_t pulseX()
     return (uint16_t)clampPulse(p);
 }
 
-static inline uint16_t pulseClaw()
-{
-    int32_t p = STOP_CLAW;
-    if (claw_cmd > 0)      p = STOP_CLAW + CLAW_OPEN;   // open
-    else if (claw_cmd < 0) p = STOP_CLAW - CLAW_CLOSE;  // close
-    return (uint16_t)clampPulse(p);
-}
-
 static inline void stopAllActuators()
 {
     z_cmd = 0;
     x_cmd = 0;
     claw_cmd = 0;
     x_brake_until_ms = millis() + 250;
-    claw_brake_until_ms = millis() + 250;
+    // NOTE: positional claw “stop” == hold last target, so do NOT change claw_target_us.
 }
 
 // Full apply (blocking): use ONLY when NOT driving
 static inline void applyActuatorsBlocking()
 {
-    // --- Z (two servos) ---
+    // --- Z (two FS90R servos) ---
     int32_t l = STOP_Z_L;
     int32_t r = STOP_Z_R;
 
@@ -136,18 +146,17 @@ static inline void applyActuatorsBlocking()
     pulseOneFrame(PIN_Z_L, (uint16_t)clampPulse(l));
     pulseOneFrame(PIN_Z_R, (uint16_t)clampPulse(r));
 
-    // --- X + claw (only if moving or in brake window) ---
+    // --- X (FS90R) ---
     const uint32_t now = millis();
-
     if (x_cmd != 0 || (int32_t)(now - x_brake_until_ms) < 0)
         pulseOneFrame(PIN_X, pulseX());
 
-    if (claw_cmd != 0 || (int32_t)(now - claw_brake_until_ms) < 0)
-        pulseOneFrame(PIN_CLAW, pulseClaw());
+    // --- CLAW (positional) ---
+    // Always pulse it while not driving so it holds position.
+    pulseOneFrame(PIN_CLAW, claw_target_us);
 }
 
 // HARD DISABLE: ZERO pulses while driving.
-// (Kept here so you don't accidentally bring it back later.)
 static inline void refreshZStopOccasionally(bool /*driving*/)
 {
     return;
@@ -162,16 +171,38 @@ static ScriptMode script = SCRIPT_NONE;
 struct Step { int8_t z, x, claw; uint16_t ms; };
 
 // >>> TUNE HERE <<< Task 1 step times
+// claw: +1=open, -1=close, 0=hold
 static Step task1[] =
 {
-    {  +1, 0,  0, 5500 },
-    {-1, 0,  0, 4500 },
+    {0, +1, 0, 800 },
+    {0, 0, -1, 200 },
+    {0, -1, 0, 1200 },
+    {+1, 0, 0, 4150 },
+
+
+    {0, +1, 0, 800 },
+    {0, 0, +1, 200 },
+    {0, -1, 0, 1200 },
+    {+1, 0, 0, 850 },
+    {0, 0, +1, 200 },
+
+    {0, +1, 0, 800 },
+    {0, 0, -1, 200 },
+    {0, -1, 0, 1350 },
+    {+1, 0, 0, 850 },
+  
+    
+
+    {0, +1, 0, 800 },
+    {0, 0, +1, 200 },
+    {0, -1, 0, 2000 },
+    {-1, 0, 0, 5000 },
 };
 
 // >>> TUNE HERE <<< Task 2 step times
 static Step task2[] =
 {
-
+    // Fill later
 };
 
 static uint8_t  step_i  = 0;
@@ -214,15 +245,18 @@ static void runScript()
         return;
     }
 
+    // Apply step commands
     z_cmd    = arr[step_i].z;
     x_cmd    = arr[step_i].x;
     claw_cmd = arr[step_i].claw;
 
+    // Positional claw mapping:
+    if (claw_cmd > 0) claw_target_us = CLAW_OPEN_US;
+    if (claw_cmd < 0) claw_target_us = CLAW_CLOSE_US;
+
     if (millis() - step_t0 >= arr[step_i].ms)
     {
-        if (arr[step_i].x != 0)    x_brake_until_ms = millis() + 250;
-        if (arr[step_i].claw != 0) claw_brake_until_ms = millis() + 250;
-
+        if (arr[step_i].x != 0) x_brake_until_ms = millis() + 250;
         step_i++;
         step_t0 = millis();
     }
@@ -233,13 +267,10 @@ static void runScript()
 // ============================================================
 static const Pose k_destinations[] =
 {
-    // Up and left (curve outward)
-    {   0.0f,  0.0f, 0.0f },
-    {  -25.0f,  -15.0f, 0.0f },
-    {-50.0f, 10.0f, 0.0f },
-
+    {   0.0f,   0.0f, 0.0f },
+    { -20.0f, -20.0f, 0.0f },
+    { -40.0f,  10.0f, 0.0f },
 };
-
 static const uint8_t k_num_destinations = sizeof(k_destinations) / sizeof(k_destinations[0]);
 
 // ============================================================
@@ -258,6 +289,9 @@ void Robot::InitializeRobot(void)
     digitalWrite(PIN_Z_R, LOW);
     digitalWrite(PIN_X, LOW);
     digitalWrite(PIN_CLAW, LOW);
+
+    // Initialize claw to OPEN or CLOSE as you like:
+    claw_target_us = CLAW_OPEN_US;  // start open (change to CLAW_CLOSE_US if you want)
 
     Serial.println("READY.");
     Serial.println("A=Task1 script, B=Task2 script, C=Task3 drive array");
@@ -319,7 +353,7 @@ void Robot::RobotLoop(void)
             Serial.print(" th:"); Serial.println(currPose.theta);
         }
 
-        // Hard stop actuators in manual
+        // Hard stop Z/X, hold claw target
         stopAllActuators();
         applyActuatorsBlocking();
         return;
@@ -369,7 +403,6 @@ void Robot::RobotLoop(void)
         Serial.println("Path run: START");
         SetDestination(k_destinations[path_index]);
 
-        // FORCE state so we don't accidentally zero motors in the "else" block
         robotState = ROBOT_DRIVE_TO_POINT;
     }
 
@@ -388,9 +421,7 @@ void Robot::RobotLoop(void)
         // While driving: HARD OFF for actuators and ZERO servo pulses.
         script = SCRIPT_NONE;
         stopAllActuators();
-
         // DO NOT call applyActuatorsBlocking()
-        // DO NOT call refreshZStopOccasionally()
     }
 
     // -----------------------------------------
@@ -409,7 +440,7 @@ void Robot::RobotLoop(void)
                 if (path_index < k_num_destinations)
                 {
                     SetDestination(k_destinations[path_index]);
-                    robotState = ROBOT_DRIVE_TO_POINT; // keep forced
+                    robotState = ROBOT_DRIVE_TO_POINT;
                 }
                 else
                 {
@@ -426,20 +457,6 @@ void Robot::RobotLoop(void)
     }
     else
     {
-        // If not navigating, don't fight DriveToPoint
         chassis.SetMotorEfforts(0, 0);
     }
-
-    // (Optional) tiny debug: state/pose at 5 Hz
-    /*
-    static uint32_t dbg_ms = 0;
-    if (millis() - dbg_ms > 200)
-    {
-        dbg_ms = millis();
-        Serial.print("state="); Serial.print((int)robotState);
-        Serial.print(" x="); Serial.print(currPose.x);
-        Serial.print(" y="); Serial.print(currPose.y);
-        Serial.print(" th="); Serial.println(currPose.theta);
-    }
-    */
 }
